@@ -1,61 +1,23 @@
 const express = require('express');
 const passport = require('passport');
-const jwt = require('jsonwebtoken');
 
-const { JWT_SECRET } = require('../config/config');
-const UserModel = require('../models/user.model');
-const { createHash } = require('../utils/bcrypt');
+const UserCurrentDto = require('../dto/user-current.dto');
+const { userRepository } = require('../config/repositories');
+const AuthService = require('../services/auth.service');
 
 const router = express.Router();
+const authService = new AuthService(userRepository);
 
-// (Opcional) Registro de usuario usando hash de contraseña
-router.post('/register', async (req, res) => {
-  try {
-    const { first_name, last_name, email, age, password } = req.body;
-
-    if (!first_name || !last_name || !email || !age || !password) {
-      return res.status(400).send({ status: 'error', message: 'Datos incompletos' });
-    }
-
-    const userExists = await UserModel.findOne({ email });
-    if (userExists) {
-      return res.status(400).send({ status: 'error', message: 'El usuario ya existe' });
-    }
-
-    const newUser = await UserModel.create({
-      first_name,
-      last_name,
-      email,
-      age,
-      password: createHash(password),
-    });
-
-    return res.status(201).send({ status: 'success', payload: newUser });
-  } catch (error) {
-    console.error(error);
-    return res.status(500).send({ status: 'error', message: 'Error en el registro' });
-  }
-});
-
-// Login: genera JWT (en cookie y en body)
 router.post('/login', (req, res, next) => {
-  passport.authenticate('login', { session: false }, (err, user, info) => {
+  passport.authenticate('login', { session: false }, async (err, user, info) => {
     if (err) return next(err);
     if (!user) {
       return res.status(401).send({ status: 'error', message: info?.message || 'Credenciales inválidas' });
     }
 
-    const token = jwt.sign(
-      {
-        id: user._id,
-        email: user.email,
-        role: user.role,
-      },
-      JWT_SECRET,
-      { expiresIn: '24h' }
-    );
+    const token = authService.createAccessToken(user);
 
-    res
+    return res
       .cookie('jwtCookieToken', token, {
         httpOnly: true,
         maxAge: 24 * 60 * 60 * 1000,
@@ -64,19 +26,45 @@ router.post('/login', (req, res, next) => {
   })(req, res, next);
 });
 
-// Current: devuelve usuario asociado al JWT
-router.get(
-  '/current',
-  passport.authenticate('jwt', { session: false }),
-  (req, res) => {
-    const user = req.user.toObject ? req.user.toObject() : req.user;
-    delete user.password;
+router.get('/current', passport.authenticate('jwt', { session: false }), (req, res) => {
+  const userDto = new UserCurrentDto(req.user);
+  return res.status(200).send({ status: 'success', user: userDto });
+});
 
-    return res.status(200).send({
-      status: 'success',
-      user,
-    });
+router.post('/forgot-password', async (req, res) => {
+  const { email } = req.body;
+  if (!email) {
+    return res.status(400).send({ status: 'error', message: 'Email requerido' });
   }
-);
+
+  await authService.requestPasswordReset(email);
+  return res.send({ status: 'success', message: 'Si el email existe, se envió un enlace de recuperación' });
+});
+
+router.get('/reset-password', (req, res) => {
+  const { token } = req.query;
+  if (!token) {
+    return res.status(400).send({ status: 'error', message: 'Token requerido' });
+  }
+
+  return res.send({
+    status: 'success',
+    message: 'Token válido. Enviá una petición POST a este mismo endpoint con token y newPassword.',
+  });
+});
+
+router.post('/reset-password', async (req, res) => {
+  try {
+    const { token, newPassword } = req.body;
+    if (!token || !newPassword) {
+      return res.status(400).send({ status: 'error', message: 'Token y nueva contraseña requeridos' });
+    }
+
+    await authService.resetPassword(token, newPassword);
+    return res.send({ status: 'success', message: 'Contraseña actualizada correctamente' });
+  } catch (error) {
+    return res.status(400).send({ status: 'error', message: error.message || 'No se pudo restablecer contraseña' });
+  }
+});
 
 module.exports = router;

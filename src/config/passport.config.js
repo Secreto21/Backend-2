@@ -3,20 +3,21 @@ const LocalStrategy = require('passport-local').Strategy;
 const JwtStrategy = require('passport-jwt').Strategy;
 const ExtractJwt = require('passport-jwt').ExtractJwt;
 
-const UserModel = require('../models/user.model');
-const { isValidPassword } = require('../utils/bcrypt');
 const { JWT_SECRET } = require('./config');
+const { userRepository } = require('./repositories');
+const AuthService = require('../services/auth.service');
+
+const authService = new AuthService(userRepository);
 
 const cookieExtractor = (req) => {
   let token = null;
   if (req && req.cookies) {
-    token = req.cookies['jwtCookieToken'] || null;
+    token = req.cookies.jwtCookieToken || null;
   }
   return token;
 };
 
 const initializePassport = () => {
-  // Estrategia de login con email + password
   passport.use(
     'login',
     new LocalStrategy(
@@ -27,15 +28,8 @@ const initializePassport = () => {
       },
       async (email, password, done) => {
         try {
-          const user = await UserModel.findOne({ email });
-          if (!user) {
-            return done(null, false, { message: 'Usuario inexistente' });
-          }
-
-          if (!isValidPassword(user, password)) {
-            return done(null, false, { message: 'Contraseña incorrecta' });
-          }
-
+          const user = await authService.validateLogin(email, password);
+          if (!user) return done(null, false, { message: 'Credenciales inválidas' });
           return done(null, user);
         } catch (error) {
           return done(error);
@@ -44,7 +38,6 @@ const initializePassport = () => {
     )
   );
 
-  // Estrategia JWT para extraer usuario desde token
   passport.use(
     'jwt',
     new JwtStrategy(
@@ -57,7 +50,7 @@ const initializePassport = () => {
       },
       async (jwtPayload, done) => {
         try {
-          const user = await UserModel.findById(jwtPayload.id);
+          const user = await userRepository.getById(jwtPayload.id);
           if (!user) return done(null, false);
           return done(null, user);
         } catch (error) {
